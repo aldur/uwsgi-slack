@@ -9,10 +9,10 @@ extern struct uwsgi_server uwsgi;
 
 struct uwsgi_slack {
     struct uwsgi_string_list *attachment_s;
-    struct slack_attachment_l *attachments;
+    struct slack_attachment *attachments;
 
     struct uwsgi_string_list *field_s;
-    struct slack_field_l *fields;
+    struct slack_field *fields;
 } uslack;
 
 struct slack_config {
@@ -31,16 +31,11 @@ struct slack_config {
     char *icon_url;
 
     // Attachments support
-    struct slack_attachment_l *attachments;
+    char *attachments;
 
     // Other configuration options
     char *ssl_no_verify;
     char *timeout;
-};
-
-struct slack_attachment_l {
-    struct slack_attachment *value;
-    struct slack_attachment_l *next;
 };
 
 struct slack_attachment {
@@ -58,15 +53,12 @@ struct slack_attachment {
 
     char *text;
 
-    struct slack_field_l *fields;
+    char *fields;
 
     char *image_url;
     char *thumb_url;
-};
 
-struct slack_field_l {
-     struct slack_field *value;
-     struct slack_field_l *next;
+    struct slack_attachment *next;
 };
 
 struct slack_field {
@@ -75,6 +67,8 @@ struct slack_field {
     char *title;
     char *value;
     char sshort;
+
+    struct slack_field *next;
 };
 
 static struct uwsgi_option slack_options[] = {
@@ -121,17 +115,15 @@ static void slack_add_field(char *arg, size_t arg_len) {
          free(sshort);
     }
 
-    struct slack_field_l *uslf = uslack.fields;
+    struct slack_field *uslf = uslack.fields;
     if (!uslf) {
-        uslack.fields = uwsgi_calloc(sizeof(struct slack_field_l));
-        uslack.fields->value = f;
+        uslack.fields = f;
     } else {
         while (uslf->next) {
             uslf = uslf->next;
         }
 
-        uslf->next = uwsgi_calloc(sizeof(struct slack_field_l));
-        uslf->next->value = f;
+        uslf->next = f;
     }
 
     return;
@@ -140,78 +132,38 @@ shutdown:
     exit(1);
 }
 
-static int slack_attachment_add_field(struct slack_attachment *attachment, char *field_name) {
-    struct slack_field_l *sfields = uslack.fields;
-    struct slack_field_l *fs = attachment->fields;
+static struct slack_field *slack_get_field(char *field_name) {
+    struct slack_field *sfield = uslack.fields;
 
-    while (sfields) {
-        // FIXME: we can improve performances by using pointers here.
-        // If we find it we update the attachment struct.
-        if (strcmp(sfields->value->name, field_name) == 0) {
-            if (!fs) {
-                attachment->fields = uwsgi_calloc(sizeof(struct slack_field_l));
-                attachment->fields->value = sfields->value;
-            } else {
-                while (fs->next) {
-                    fs = fs->next;
-                }
-
-                fs->next = uwsgi_calloc(sizeof(struct slack_field_l));
-                fs->next->value = sfields->value;
-            }
-
-            break;
+    while (sfield) {
+        if (strcmp(sfield->name, field_name) == 0) {
+            return sfield;
         }
 
-        sfields = sfields->next;
+        sfield = sfield->next;
     }
 
-    // If we're here, we haven't found the field-name
-    if (!sfields) {
-        return 1;
-    }
-
-    return 0;
+    return NULL;
 }
 
-static int slack_config_add_attachment(struct slack_config *pbc, char *attachment_name) {
-    struct slack_attachment_l *sattachments = uslack.attachments;
-    struct slack_attachment_l *as = pbc->attachments;
+static struct slack_attachment *slack_get_attachment(char *attachment_name) {
+    struct slack_attachment *sattachment = uslack.attachments;
 
-    while (sattachments) {
-        // FIXME: we can improve performances by using pointers here.
-        // If we find it we update the configuration struct.
-        if (strcmp(sattachments->value->name, attachment_name) == 0) {
-            if (!as) {
-                pbc->attachments = uwsgi_calloc(sizeof(struct slack_attachment_l));
-                pbc->attachments->value = sattachments->value;
-            } else {
-                while (as->next) {
-                    as = as->next;
-                }
-
-                as->next = uwsgi_calloc(sizeof(struct slack_attachment_l));
-                as->next->value = sattachments->value;
-            }
-
-            break;
+    while (sattachment) {
+        if (strcmp(sattachment->name, attachment_name) == 0) {
+            return sattachment;
         }
 
-        sattachments = sattachments->next;
+        sattachment = sattachment->next;
     }
 
-    // If we're here, we haven't found the attachment-name
-    if (!sattachments) {
-        return 1;
-    }
-
-    return 0;
+    return NULL;
 }
+
 #define sakv(x) #x, &attachment->x
 static void slack_add_attachment(char *arg, size_t arg_len) {
     struct slack_attachment *attachment = uwsgi_calloc(sizeof(struct slack_attachment));
 
-    char *fields = NULL;
     if (uwsgi_kvlist_parse(arg, arg_len, ',', '=',
                 sakv(name),
                 sakv(fallback),
@@ -223,54 +175,29 @@ static void slack_add_attachment(char *arg, size_t arg_len) {
                 sakv(title),
                 sakv(title_link),
                 sakv(text),
+                sakv(fields),
                 sakv(image_url),
                 sakv(thumb_url),
-                "fields", &fields,
                 NULL)
        ){
         uwsgi_log(LNAME" unable to parse slack attachment definition\n");
         goto shutdown;
     }
 
-    // TODO: check for mandatory arguments here!
     if (!attachment->name) {
         uwsgi_log(LNAME" a name is required for the attachment definition\n");
         goto shutdown;
     }
 
-    if (fields) {
-        // We're gonna fill the attachment fields
-        char *field_name = fields;
-        char *semicolon;
-
-        do {
-            // Required field-names are divided by a semicolon
-            semicolon = strchr(field_name, ';');
-
-            char *field_name_t = field_name;
-            if (semicolon) {
-                *semicolon = 0;
-                field_name = ++semicolon;
-            }
-
-            if (slack_attachment_add_field(attachment, field_name_t)) {
-                uwsgi_log(LNAME" unable to find required attachment-field name\n");
-                goto shutdown;
-            }
-        } while (semicolon);
-    }
-
-    struct slack_attachment_l *uslas = uslack.attachments;
+    struct slack_attachment *uslas = uslack.attachments;
     if (!uslas) {
-        uslack.attachments = uwsgi_calloc(sizeof(struct slack_attachment_l));
-        uslack.attachments->value = attachment;
+        uslack.attachments = attachment;
     } else {
         while (uslas->next) {
             uslas = uslas->next;
         }
 
-        uslas->next = uwsgi_calloc(sizeof(struct slack_attachment_l));
-        uslas->next->value = attachment;
+        uslas->next = attachment;
     }
 
     return;
@@ -283,7 +210,6 @@ shutdown:
 static int slack_config_do(char *arg, struct slack_config *pbc) {
     memset(pbc, 0, sizeof(struct slack_config));
 
-    char *attachment_s = NULL;
     if (uwsgi_kvlist_parse(arg, strlen(arg), ',', '=',
                 pkv(webhook_url),
                 pkv(text),
@@ -294,7 +220,7 @@ static int slack_config_do(char *arg, struct slack_config *pbc) {
                 pkv(ssl_no_verify),
                 pkv(timeout),
                 pkv(timeout),
-                "attachments", &attachment_s,
+                pkv(attachments),
                 NULL)) {
         uwsgi_log(LNAME" unable to parse specified Slack options\n");
         return -1;
@@ -305,48 +231,20 @@ static int slack_config_do(char *arg, struct slack_config *pbc) {
         return -1;
     }
 
-    if (attachment_s) {
-        // We're gonna fill the attachments
-        char *attachment_name = attachment_s;
-        char *semicolon;
-
-        do {
-            // Required attachment-names are divided by a semicolon
-            semicolon = strchr(attachment_name, ';');
-
-            char *attachment_name_t = attachment_name;
-            if (semicolon) {
-                *semicolon = 0;
-                attachment_name = ++semicolon;
-            }
-
-            if (slack_config_add_attachment(pbc, attachment_name_t)) {
-                uwsgi_log(LNAME" unable to find required attachment name %s\n",
-                        attachment_name_t);
-                return 1;
-            }
-        } while (semicolon);
-    }
-
     return 0;
 }
 
+#define sfree(x) if(pbc->x) free(pbc->x)
 static void slack_free(struct slack_config *pbc) {
-    if (pbc->webhook_url) free(pbc->webhook_url);
-    if (pbc->text) free(pbc->text);
-    if (pbc->channel) free(pbc->channel);
-    if (pbc->username) free(pbc->username);
-    if (pbc->icon_emoji) free(pbc->icon_emoji);
-    if (pbc->icon_url) free(pbc->icon_url);
-    if (pbc->ssl_no_verify) free(pbc->ssl_no_verify);
-    if (pbc->timeout) free(pbc->timeout);
-
-    struct slack_attachment_l *al = pbc->attachments;
-    while (al) {
-        struct slack_attachment_l *alt = al->next;
-        free(al);
-        al = alt;
-    }
+    sfree(webhook_url);
+    sfree(text);
+    sfree(channel);
+    sfree(username);
+    sfree(attachments);
+    sfree(icon_emoji);
+    sfree(icon_url);
+    sfree(ssl_no_verify);
+    sfree(timeout);
 }
 
 static json_t *build_field_json(struct slack_field *f) {
@@ -382,18 +280,35 @@ static json_t *build_attachment_json(struct slack_attachment *a) {
     saj(image_url);
     saj(thumb_url);
 
-    struct slack_field_l *fs;
-    if ((fs = a->fields)) {
+    if (a->fields) {
+        // We're gonna fill the attachment fields
         json_t *jfs = json_array();
+        char *field_name = uwsgi_concat2n(a->fields, strlen(a->fields), "", 0);
+        char *field_name_f = field_name;
 
-        while (fs) {
-            json_t *jf = build_field_json(fs->value);
+        char *semicolon;
+        do {
+            // Required field-names are divided by a semicolon
+            semicolon = strchr(field_name, ';');
+
+            char *field_name_t = field_name;
+            if (semicolon) {
+                *semicolon = 0;
+                field_name = ++semicolon;
+            }
+
+            struct slack_field *f;
+            if (!(f = slack_get_field(field_name_t))) {
+                uwsgi_log(LNAME" unable to find required attachment-field name\n");
+                goto error;
+            }
+
+            json_t *jf = build_field_json(f);
             if (!jf || json_array_append_new(jfs, jf)) goto error;
-
-            fs = fs->next;
-        }
+        } while (semicolon);
 
         if (json_object_set_new(ja, "fields", jfs)) goto error;
+        free(field_name_f);
     }
 
     return ja;
@@ -422,18 +337,38 @@ static json_t *build_json(struct slack_config *pbc, char* text) {
         if (json_object_set_new(j, "icon_url", json_string(pbc->icon_url))) goto error;
     }
 
-    struct slack_attachment_l *as;
-    if ((as = pbc->attachments)) {
+    // We'll handle the attachments here.
+    if (pbc->attachments) {
+        char *attachments = uwsgi_concat2n(pbc->attachments, strlen(pbc->attachments), "", 0);
+        char *attachments_f = attachments;
+
         json_t *jas = json_array();
 
-        while (as) {
-            json_t *ja = build_attachment_json(as->value);
+        char *semicolon;
+        do {
+            // Required attachment-names are divided by a semicolon
+            semicolon = strchr(attachments, ';');
+
+            char *attachments_t = attachments;
+            if (semicolon) {
+                *semicolon = 0;
+                attachments = ++semicolon;
+            }
+
+            struct slack_attachment *a;
+            if (!(a = slack_get_attachment(attachments_t))) {
+                uwsgi_log(LNAME" unable to find required attachment name %s\n",
+                        attachments_t);
+                goto error;
+            }
+
+            json_t *ja = build_attachment_json(a);
             if (!ja || json_array_append_new(jas, ja)) goto error;
 
-            as = as->next;
-        }
+        } while (semicolon);
 
         if (json_object_set_new(j, "attachments", jas)) goto error;
+        free(attachments_f);
     }
 
     return j;
