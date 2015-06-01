@@ -6,6 +6,7 @@ uWSGI-slack provides the following features:
 
 * Registers _slack alarm_ and _slack hook_.
 * Support to the [Slack incoming webhooks API](https://api.slack.com/incoming-webhooks) (send messages to channels, users and so on).
+* Support to the [Slack messagge attachments API](https://api.slack.com/docs/attachments) (fancy message attachments).
 
 ## Installation
 This plugin requires:
@@ -58,9 +59,10 @@ hook-post-app = slack:webhook_url=YOUR_SLACK_TEAM_WEBHOOK_URL,text=Your awesome 
 ; ...
 ```
 
-### Key-value fields
+### Alarms/hooks key-value options
 We support the entire [Slack incoming webhook API](https://api.slack.com/incoming-webhooks).
-Available key-values fields include:
+Available key-values options are:
+
 * text
 * channel
 * username
@@ -69,9 +71,78 @@ Available key-values fields include:
 
 Unspecified settings will fallback to the Slack webhook defaults.
 
+As an extra, you can specify a `;` separated list of [attachments](#attachments) as a value for the `attachments` key.
+
+### Attachments
+You can define an attachment and send messages containing it by using the following configuration snippet:
+
+```ini
+[uwsgi]
+plugins = slack
+
+slack-attachment = name=groove,title=A slack attachment,color=#7CD197
+hook-post-app = slack:webhook_url=YOUR_SLACK_TEAM_WEBHOOK_URL,attachments=groove,text=Hook text
+
+; ...
+```
+
+As you can see we specify a mandatory attachment `name`, we setup the attachment and we link it to the uWSGI hook / alarm through the `attachments` key.
+
+__Note:__ the attachments' name lookup is done at runtime. A malformed attachment name will let uWSGI ignore the whole alarm / hook trigger.
+
+Attachments key-value options are:
+
+* name (_mandatory_)
+* fallback
+* color
+* pretext
+* author_name
+* author_link
+* author_icon
+* title
+* title_link
+* text
+* image_url
+* thumb_url
+
+A detailed explanation for each key can be found [here](https://api.slack.com/docs/attachments).
+Again, unspecified settings will fallback to Slack defaults.
+
+As an extra, you can link a `;` separated list of [fields](#fields) to the attachment by using the `fields` key.
+
+### Fields
+Fields are nested within attachments and will be displayed in a table.
+
+Their configuration is should look familiar:
+```ini
+[uwsgi]
+plugins = slack
+
+slack-field = name=project,title=Project,value=Awesome Project,short=true
+slack-field = name=environment,title=Environment,value=Production Project
+
+slack-attachment = name=groove,title=A slack attachment,color=#7CD197,fields=project;environment
+
+hook-post-app = slack:webhook_url=YOUR_SLACK_TEAM_WEBHOOK_URL,attachments=groove,text=Hook text
+
+; ...
+```
+
+Fields key-value options are:
+
+* name (_mandatory_)
+* title
+* value
+* short (if anything is set will be considered True, False otherwise)
+
+As usual, better documentation for each key can be found [here](https://api.slack.com/docs/attachments).
+
+### uWSGI related key-value options
 On the uWSGI/networking side you can set:
 * timeout: specifies the socket timeout.
 * ssl_no_verify: tells Curl to not verify the server SSL certificate.
 
-### Future improvements
-Support Slack [Message Attachments](https://api.slack.com/docs/attachments).
+## Screens
+An alarm-resulting example with attachments and fields in action.
+
+![Example](http://i.imgur.com/VZd2auX.png)
